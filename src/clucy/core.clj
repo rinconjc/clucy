@@ -1,21 +1,17 @@
 (ns clucy.core
-  (:import (java.io StringReader File)
-           (org.apache.lucene.analysis Analyzer TokenStream)
-           (org.apache.lucene.analysis.standard StandardAnalyzer)
-           (org.apache.lucene.document Document Field Field$Index Field$Store)
-           (org.apache.lucene.index IndexWriter IndexReader Term
-                                    IndexWriterConfig DirectoryReader FieldInfo)
-           (org.apache.lucene.queryparser.classic QueryParser)
-           (org.apache.lucene.search BooleanClause BooleanClause$Occur
-                                     BooleanQuery IndexSearcher Query ScoreDoc
-                                     Scorer TermQuery)
-           (org.apache.lucene.search.highlight Highlighter QueryScorer
-                                               SimpleHTMLFormatter)
-           (org.apache.lucene.util Version AttributeSource)
-           (org.apache.lucene.store NIOFSDirectory RAMDirectory Directory)))
+  (:import [java.io File StringReader]
+           [org.apache.lucene.analysis Analyzer TokenStream]
+           org.apache.lucene.analysis.standard.StandardAnalyzer
+           [org.apache.lucene.document Document Field FieldType]
+           [org.apache.lucene.index DirectoryReader IndexOptions IndexReader IndexWriter IndexWriterConfig Term]
+           org.apache.lucene.queryparser.classic.QueryParser
+           [org.apache.lucene.search BooleanClause BooleanClause$Occur BooleanQuery$Builder IndexSearcher Query ScoreDoc TermQuery]
+           [org.apache.lucene.search.highlight Highlighter QueryScorer SimpleHTMLFormatter]
+           [org.apache.lucene.store Directory NIOFSDirectory RAMDirectory]
+           org.apache.lucene.util.Version))
 
 (def ^{:dynamic true} *version* Version/LUCENE_CURRENT)
-(def ^{:dynamic true} *analyzer* (StandardAnalyzer. *version*))
+(def ^{:dynamic true} *analyzer* (StandardAnalyzer.))
 
 ;; To avoid a dependency on either contrib or 1.2+
 (defn as-str ^String [x]
@@ -34,14 +30,14 @@
 (defn disk-index
   "Create a new index in a directory on disk."
   [^String dir-path]
-  (NIOFSDirectory. (File. dir-path)))
+  (NIOFSDirectory. (.toPath (File. dir-path))))
 
 (defn- index-writer
   "Create an IndexWriter."
   ^IndexWriter
   [index]
   (IndexWriter. index
-                (IndexWriterConfig. *version* *analyzer*)))
+                (IndexWriterConfig. *analyzer*)))
 
 (defn- index-reader
   "Create an IndexReader."
@@ -62,16 +58,14 @@
   ([document key value meta-map]
      (.add ^Document document
            (Field. (as-str key) (as-str value)
-                   (if (false? (:stored meta-map))
-                     Field$Store/NO
-                     Field$Store/YES)
-                   (if (false? (:indexed meta-map))
-                     Field$Index/NO
-                     (case [(false? (:analyzed meta-map)) (false? (:norms meta-map))]
-                       [false false] Field$Index/ANALYZED
-                       [true false] Field$Index/NOT_ANALYZED
-                       [false true] Field$Index/ANALYZED_NO_NORMS
-                       [true true] Field$Index/NOT_ANALYZED_NO_NORMS))))))
+                   (doto (FieldType.)
+                     (.setStored (not (false? (:stored meta-map))))
+                     (.setOmitNorms (false? (:norms meta-map)))
+                     (.setIndexOptions (if (false? (:indexed meta-map))
+                                         IndexOptions/NONE
+                                         IndexOptions/DOCS_AND_FREQS_AND_POSITIONS))
+                     (.setTokenized (and (not (false? (:analyzed meta-map)))
+                                         (not (false? (:indexed meta-map))))))))))
 
 (defn- map-stored
   "Returns a hash-map containing all of the values in the map that
@@ -113,14 +107,14 @@
   [index & maps]
   (with-open [writer (index-writer index)]
     (doseq [m maps]
-      (let [query (BooleanQuery.)]
+      (let [builder (BooleanQuery$Builder.)]
         (doseq [[key value] m]
-          (.add query
+          (.add builder
                 (BooleanClause.
                  (TermQuery. (Term. (.toLowerCase (as-str key))
                                     (.toLowerCase (as-str value))))
                  BooleanClause$Occur/MUST)))
-        (.deleteDocuments writer query)))))
+        (.deleteDocuments writer (.build builder))))))
 
 (defn- document->map
   "Turn a Document object into a map."
@@ -179,8 +173,7 @@ fragments."
     (with-open [reader (index-reader index)]
       (let [default-field (or default-field :_content)
             searcher (IndexSearcher. reader)
-            parser (doto (QueryParser. *version*
-                                       (as-str default-field)
+            parser (doto (QueryParser. (as-str default-field)
                                        *analyzer*)
                      (.setDefaultOperator (case (or default-operator :or)
                                             :and QueryParser/AND_OPERATOR
@@ -189,7 +182,7 @@ fragments."
             hits (.search searcher query (int max-results))
             highlighter (make-highlighter query searcher highlight)
             start (* page results-per-page)
-            end (min (+ start results-per-page) (.totalHits hits))]
+            end (min (+ start results-per-page) (.-value (.totalHits hits)))]
         (doall
          (with-meta (for [hit (map (partial aget (.scoreDocs hits))
                                    (range start end))]
@@ -198,7 +191,7 @@ fragments."
                                      (.score ^ScoreDoc hit)
 
                                      highlighter))
-           {:_total-hits (.totalHits hits)
+           {:_total-hits (.-value (.totalHits hits))
             :_max-score (.getMaxScore hits)}))))))
 
 (defn search-and-delete
@@ -210,6 +203,6 @@ of the results."
        (throw (Exception. "No default search field specified"))))
   ([index query default-field]
      (with-open [writer (index-writer index)]
-       (let [parser (QueryParser. *version* (as-str default-field) *analyzer*)
+       (let [parser (QueryParser. (as-str default-field) *analyzer*)
              query  (.parse parser query)]
          (.deleteDocuments writer query)))))
