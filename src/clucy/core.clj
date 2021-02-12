@@ -114,7 +114,7 @@
                  (TermQuery. (Term. (.toLowerCase (as-str key))
                                     (.toLowerCase (as-str value))))
                  BooleanClause$Occur/MUST)))
-        (.deleteDocuments writer (.build builder))))))
+        (.deleteDocuments writer (into-array Query [(.build builder)]))))))
 
 (defn- document->map
   "Turn a Document object into a map."
@@ -130,7 +130,8 @@
          (-> (into {}
                    (for [^Field f (.getFields document)
                          :let [field-type (.fieldType f)]]
-                     [(keyword (.name f)) {:indexed (.indexed field-type)
+                     [(keyword (.name f)) {:indexed (not= IndexOptions/NONE 
+                                                          (.indexOptions field-type))
                                            :stored (.stored field-type)
                                            :tokenized (.tokenized field-type)}]))
              (assoc :_fragments fragments :_score score)
@@ -192,7 +193,7 @@ fragments."
 
                                      highlighter))
            {:_total-hits (.-value (.totalHits hits))
-            :_max-score (.getMaxScore hits)}))))))
+            :_max-score (some-> hits (.scoreDocs) first (.score))}))))))
 
 (defn search-and-delete
   "Search the supplied index with a query string and then delete all
@@ -205,4 +206,4 @@ of the results."
      (with-open [writer (index-writer index)]
        (let [parser (QueryParser. (as-str default-field) *analyzer*)
              query  (.parse parser query)]
-         (.deleteDocuments writer query)))))
+         (.deleteDocuments writer (into-array Query [query]))))))
